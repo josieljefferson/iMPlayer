@@ -1,0 +1,93 @@
+# 🔄 WORKFLOW PARA DOWNLOAD AUTOMÁTICO DE PLAYLISTS E EPGs
+# 📅 Atualiza diariamente as playlists M3U e guias de programação (EPG)
+# 🚀 Acionado manualmente ou por agendamento cron
+
+name: '📥 Download Playlists and EPGs'
+
+on:
+  # 🎮 Permite execução manual pela interface do GitHub
+  workflow_dispatch:
+  
+  # ⏰ Agendamento automático (executa diariamente à meia-noite UTC)
+  schedule:
+    - cron: '1 3 1-31/2 * *'  # Formato cron: minuto hora dia mês dia-da-semana
+
+# 📦 Define os jobs que serão executados
+jobs:
+  # 🛠️ Job principal para download dos arquivos
+  download-media:
+    # 💻 Especifica o sistema operacional (Ubuntu 24.04 - versão LTS mais recente)
+    runs-on: ubuntu-24.04
+    
+    # 🧩 Lista de passos (steps) que serão executados sequencialmente
+    steps:
+    # 1️⃣ Passo: Checkout do repositório (obtém o código fonte)
+    - name: '🔁 Checkout repository'
+      uses: actions/checkout@v4  # Versão mais estável da ação checkout
+      with:
+        fetch-depth: 0  # Obtém todo o histórico de commits (necessário para git push)
+
+    # 2️⃣ Passo: Configuração do Python
+    - name: '🐍 Set up Python'
+      uses: actions/setup-python@v5  # Versão mais recente da ação Python
+      with:
+        python-version: '3.10'  # Versão específica do Python (compatível com o script)
+
+    # 3️⃣ Passo: Instalação das dependências
+    - name: '📦 Install dependencies'
+      run: |
+        python -m pip install --upgrade pip  # Atualiza o pip
+        pip install requests tzdata pytz    # Instala bibliotecas necessárias
+
+    # 4️⃣ Passo: Configuração do fuso horário (Brasil/Fortaleza)
+    - name: '⏰ Set timezone to America/Fortaleza'
+      run: |
+        # Cria link simbólico para o timezone correto
+        sudo ln -sf /usr/share/zoneinfo/America/Fortaleza /etc/localtime
+        # Configura o timezone no sistema
+        echo "America/Fortaleza" | sudo tee /etc/timezone
+        # Verifica e exibe o timezone configurado
+        echo "Timezone set to $(date +'%Z %z')"
+
+    # 5️⃣ Passo: Execução do script principal
+    - name: '🚀 Run media downloader'
+      run: python media_downloader.py  # Executa o script Python
+
+    # 6️⃣ Passo: Adiciona timestamp aos arquivos baixados
+    - name: '🕒 Add timestamp to files'
+      run: |
+        # Define o timezone para Fortaleza durante a execução
+        export TZ=America/Fortaleza
+        # Itera sobre os arquivos baixados
+        for file in playlists/*.m3u epg/*.xml.gz iMPlayer/*; do
+          # Verifica se o arquivo existe (é um arquivo regular)
+          if [ -f "$file" ]; then
+            # Adiciona linha de comentário com a data/hora de atualização
+            echo "# Atualizado em $(date '+%d/%m/%Y %H:%M:%S %Z')" >> "$file"
+            echo "# by Josiel Jefferson - josielluz, josieljluz, josieljefferson" >> "$file"
+          fi
+        done
+
+    # 7️⃣ Passo: Commit e push das alterações
+    - name: '💾 Commit changes'
+      run: |
+        # Configura o usuário do Git (necessário para fazer commit)
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        # Adiciona todas as alterações
+        git add .
+        
+        # Verifica se há alterações para commitar (evita erro em caso de não haver mudanças)
+        git diff-index --quiet HEAD || \
+        git commit -m "Atualização automática dos arquivos baixados - $(date -d 'now' '+%d/%m/%Y %H:%M:%S') - America/Fortaleza"
+        
+        # Envia as alterações para o repositório remoto
+        git push
+
+    # 8️⃣ Passo: Upload dos logs como artefato (para debug)
+    - name: '📤 Upload logs'
+      uses: actions/upload-artifact@v4  # Versão mais recente da ação upload-artifact
+      with:
+        name: download-logs  # Nome do artefato
+        path: media_downloader.log  # Arquivo de log a ser disponibilizado

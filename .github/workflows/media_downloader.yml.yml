@@ -1,0 +1,56 @@
+name: Download Playlists and EPGs
+
+on:
+  workflow_dispatch:  # Permite execução manual
+  schedule:
+    - cron: '0 0 * * *'  # Executa diariamente à meia-noite UTC
+
+jobs:
+  download-media:
+    runs-on: ubuntu-24.04  # Especifica a versão exata do Ubuntu
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4  # Atualizado para v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5  # Atualizado para v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests tzdata pytz
+
+    - name: Set timezone to America/Fortaleza
+      run: |
+        sudo ln -sf /usr/share/zoneinfo/America/Fortaleza /etc/localtime
+        echo "America/Fortaleza" | sudo tee /etc/timezone
+        echo "Timezone set to $(date +'%Z %z')"
+
+    - name: Run media downloader
+      run: python media_downloader.py
+
+    - name: Add timestamp to files
+      run: |
+        export TZ=America/Fortaleza
+        for file in playlists/*.m3u epg/*.xml.gz iMPlayer/*; do
+          if [ -f "$file" ]; then
+            echo "# Atualizado em $(date '+%d/%m/%Y %H:%M:%S %Z')" >> "$file"
+          fi
+        done
+
+    - name: Commit changes
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        git add .
+        git diff-index --quiet HEAD || git commit -m "Atualização automática dos arquivos baixados (playlists.m3u) - $(date -d 'now' '+%d/%m/%Y %H:%M:%S') - America/Fortaleza"
+        git push
+
+    - name: Upload logs
+      uses: actions/upload-artifact@v4  # Atualizado para v4
+      with:
+        name: download-logs
+        path: media_downloader.log
