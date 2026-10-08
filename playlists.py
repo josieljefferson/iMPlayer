@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import shutil
 import requests
@@ -15,16 +18,16 @@ logger = logging.getLogger(__name__)
 # Configurações globais
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 OUTPUT_DIR = os.path.join(os.getcwd(), "playlists")
-TIMEOUT = 10  # Timeout configurável
-RETRIES = 3  # Número de tentativas de download
-MAX_WORKERS = 5  # Número máximo de downloads simultâneos
+TIMEOUT = 10
+RETRIES = 3
+MAX_WORKERS = 5
 
 
 def validate_url(url):
     """
     Valida a URL antes de tentar o download.
     """
-    if not url.startswith(("http://", "https://")):
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
         logger.error(f"URL inválida: {url}")
         return False
 
@@ -33,15 +36,17 @@ def validate_url(url):
 
 def download_file(url, save_path, retries=RETRIES):
     """
-    Baixa um arquivo da URL fornecida e sobrescreve se já existir.
+    Baixa um arquivo da URL fornecida e sobrescreve
+    o arquivo de destino se ele já existir.
     """
+
     if not validate_url(url):
         return False
 
-    for attempt in range(retries):
+    for attempt in range(1, retries + 1):
         try:
             logger.info(
-                f"Tentativa {attempt + 1} de {retries}: "
+                f"Tentativa {attempt} de {retries}: "
                 f"Baixando arquivo de: {url}"
             )
 
@@ -52,7 +57,6 @@ def download_file(url, save_path, retries=RETRIES):
             )
 
             if response.status_code == 200:
-
                 # Garante que o diretório de destino exista
                 os.makedirs(
                     os.path.dirname(save_path),
@@ -60,22 +64,22 @@ def download_file(url, save_path, retries=RETRIES):
                 )
 
                 # Salva o conteúdo do arquivo
-                with open(save_path, 'wb') as file:
+                with open(save_path, "wb") as file:
                     file.write(response.content)
 
                 # Verifica se o arquivo foi salvo corretamente
-                if os.path.getsize(save_path) > 0:
+                file_size = os.path.getsize(save_path)
 
+                if file_size > 0:
                     logger.info(
-                        f"Arquivo salvo com sucesso: {save_path} "
-                        f"(Tamanho: {os.path.getsize(save_path)} bytes)"
+                        f"Arquivo salvo com sucesso: "
+                        f"{save_path} "
+                        f"(Tamanho: {file_size} bytes)"
                     )
 
-                    # Calcula o hash MD5 do arquivo
-                    with open(save_path, 'rb') as file:
-                        file_hash = md5(
-                            file.read()
-                        ).hexdigest()
+                    # Calcula o hash MD5
+                    with open(save_path, "rb") as file:
+                        file_hash = md5(file.read()).hexdigest()
 
                     logger.info(
                         f"Hash MD5 do arquivo: {file_hash}"
@@ -83,25 +87,29 @@ def download_file(url, save_path, retries=RETRIES):
 
                     return True
 
-                else:
-                    logger.error(
-                        f"Erro: Arquivo vazio ou corrompido: {save_path}"
-                    )
+                logger.error(
+                    f"Erro: arquivo vazio ou corrompido: {save_path}"
+                )
 
             else:
                 logger.error(
                     f"Falha ao baixar {url}. "
-                    f"Código: {response.status_code}"
+                    f"Código HTTP: {response.status_code}"
                 )
 
         except requests.exceptions.Timeout:
             logger.error(
-                f"Erro: Timeout ao baixar {url}"
+                f"Erro de timeout ao baixar {url}"
             )
 
         except requests.exceptions.ConnectionError:
             logger.error(
-                f"Erro: Problema de conexão ao baixar {url}"
+                f"Erro de conexão ao baixar {url}"
+            )
+
+        except requests.exceptions.RequestException as e:
+            logger.error(
+                f"Erro HTTP ao baixar {url}: {e}"
             )
 
         except Exception as e:
@@ -117,7 +125,6 @@ def download_file(url, save_path, retries=RETRIES):
 
 
 def main():
-
     # Remove a pasta playlists antes de baixar os arquivos
     logger.info("Limpando diretório anterior...")
 
@@ -132,32 +139,44 @@ def main():
     )
 
     # Lista de arquivos para download
+    #
+    # IMPORTANTE:
+    # Cada item agora possui:
+    #   nome do arquivo -> URL
+    #
+    # Isso corrige o erro:
+    # AttributeError: 'list' object has no attribute 'items'
+
     files_to_download = {
-        "m3u": [
-            "https://raw.githubusercontent.com/"
-            "josieljefferson/EPG/refs/heads/main/"
-            "output/playlist.m3u",
+        "m3u": {
+            "EPG-playlist.m3u":
+                "https://raw.githubusercontent.com/"
+                "josieljefferson/EPG/refs/heads/main/"
+                "output/playlist.m3u",
 
-            "https://raw.githubusercontent.com/"
-            "josieljefferson/EPG-M3U/refs/heads/main/"
-            "output/playlist.m3u"
-        ],
+            "EPG-M3U-playlist.m3u":
+                "https://raw.githubusercontent.com/"
+                "josieljefferson/EPG-M3U/refs/heads/main/"
+                "output/playlist.m3u"
+        },
 
-        "xml.gz": [
-            "https://raw.githubusercontent.com/"
-            "josieljefferson/EPG/refs/heads/main/"
-            "output/epg.xml.gz",
+        "xml.gz": {
+            "EPG-epg.xml.gz":
+                "https://raw.githubusercontent.com/"
+                "josieljefferson/EPG/refs/heads/main/"
+                "output/epg.xml.gz",
 
-            "https://raw.githubusercontent.com/"
-            "josieljefferson/EPG-M3U/refs/heads/main/"
-            "output/epg.xml.gz"
-        ]
+            "EPG-M3U-epg.xml.gz":
+                "https://raw.githubusercontent.com/"
+                "josieljefferson/EPG-M3U/refs/heads/main/"
+                "output/epg.xml.gz"
+        }
     }
 
-    # Processa o download dos arquivos
-    logger.info(
-        "Iniciando download dos arquivos..."
-    )
+    # Processa os downloads
+    logger.info("Iniciando download dos arquivos...")
+
+    download_results = []
 
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
@@ -165,41 +184,65 @@ def main():
 
         futures = []
 
-        for ext, files in files_to_download.items():
+        for _, files in files_to_download.items():
 
-            for index, url in enumerate(files, start=1):
-
-                # Gera o nome do arquivo
-                if ext == "m3u":
-                    filename = f"playlist_{index}.m3u"
-                else:
-                    filename = f"epg_{index}.xml.gz"
+            for filename, url in files.items():
 
                 save_path = os.path.join(
                     OUTPUT_DIR,
                     filename
                 )
 
+                future = executor.submit(
+                    download_file,
+                    url,
+                    save_path
+                )
+
                 futures.append(
-                    executor.submit(
-                        download_file,
-                        url,
-                        save_path
+                    (filename, url, future)
+                )
+
+        # Aguarda todos os downloads
+        for filename, url, future in futures:
+
+            try:
+                success = future.result()
+
+                download_results.append(success)
+
+                if not success:
+                    logger.error(
+                        f"Falha no download: {filename}"
                     )
-                )
 
-        for future in as_completed(futures):
-
-            if not future.result():
+            except Exception as e:
                 logger.error(
-                    "Erro durante o download de um arquivo."
+                    f"Erro no download de {filename}: {e}"
                 )
+
+                download_results.append(False)
+
+    # Resultado final
+    total = len(download_results)
+    successful = sum(download_results)
+    failed = total - successful
 
     logger.info(
-        "Download concluído."
+        f"Download concluído: "
+        f"{successful}/{total} arquivo(s) baixado(s)."
     )
+
+    if failed > 0:
+        logger.error(
+            f"{failed} arquivo(s) apresentaram falha."
+        )
+
+        # Faz o GitHub Actions falhar se algum download falhar
+        raise RuntimeError(
+            "Um ou mais arquivos não foram baixados corretamente."
+        )
 
 
 if __name__ == "__main__":
     main()
-
