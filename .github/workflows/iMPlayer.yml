@@ -2,74 +2,237 @@ name: iMPlayer
 
 on:
   schedule:
-    - cron: '5 3,15 * * *'  # Executa às 00:05 e 12:05 BRT (03:05 e 15:05 UTC)
-  workflow_dispatch:  # Permite execução manual
+    # 00:05 e 12:05 no horário de Brasília
+    # 03:05 e 15:05 UTC
+    - cron: '5 3,15 * * *'
+
+  workflow_dispatch:
+
+# Permissão necessária para o GITHUB_TOKEN
+# fazer commit e push no próprio repositório.
+permissions:
+  contents: write
+
+# Impede duas execuções simultâneas
+# de alterarem a branch main ao mesmo tempo.
+concurrency:
+  group: implayer-download
+  cancel-in-progress: false
 
 jobs:
   download:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repositório
-      uses: actions/checkout@v4
 
-    - name: Configurar Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.8'
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+      - name: 📥 Checkout repositório
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Cache pip dependencies
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
+      # ============================================================
+      # CONFIGURAR PYTHON
+      # ============================================================
+      - name: 🐍 Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
 
-    - name: Instalar dependências
-      run: |
-        python -m pip install --upgrade pip
-        pip install requests
+      # ============================================================
+      # INSTALAR DEPENDÊNCIAS
+      # ============================================================
+      - name: 📦 Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
 
-    - name: Executar script de iMPlayer
-      run: python iMPlayer.py
+      # ============================================================
+      # EXECUTAR SCRIPT
+      # ============================================================
+      - name: 📥 Executar iMPlayer.py
+        run: |
+          python iMPlayer.py
 
-    - name: Atualizar timestamp nos arquivos baixados
-      run: |
-        echo "# Atualizado em $(date)" >> iMPlayer/playlist.m3u
-        echo "# Atualizado em $(date)" >> iMPlayer/playlist.xml.gz
-        echo "# Atualizado em $(date)" >> iMPlayer/playlists.m3u
-        echo "# Atualizado em $(date)" >> iMPlayer/playlists.xml.gz
+      # ============================================================
+      # VALIDAR ARQUIVOS
+      # ============================================================
+      - name: 🔎 Validar arquivos baixados
+        shell: bash
+        run: |
+          set -e
 
+          echo "=========================================="
+          echo "ARQUIVOS GERADOS"
+          echo "=========================================="
 
-    - name: Confirmar arquivos baixados
-      run: ls -la iMPlayer
+          if [ ! -d "iMPlayer" ]; then
+            echo "ERRO: diretório iMPlayer não existe."
+            exit 1
+          fi
 
-    - name: Verificar mudanças no Git
-      id: git_status
-      run: |
-        if [[ -n "$(git status --porcelain)" ]]; then
-          echo "changes=true" >> $GITHUB_ENV
-        else
-          echo "changes=false" >> $GITHUB_ENV
-        fi
+          ls -lah iMPlayer/
 
-    - name: Commit e push do arquivo baixado (se houver mudanças)
-      if: env.changes == 'true'
-      run: |
-        git config --global user.name "github-actions[bot]"
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add iMPlayer/
-        git commit -m "Atualização automática dos arquivos baixados"
-        git pull --rebase origin main
-        git push https://x-access-token:${{ secrets.MY_DOWNLOAD_GITHUB_TOKEN }}@github.com/josieljefferson/iMPlayer.git main
+          echo
+          echo "=========================================="
+          echo "VALIDANDO ARQUIVOS M3U"
+          echo "=========================================="
 
-    - name: Notificar sucesso
-      if: success()
-      run: |
-        echo "Workflow executado com sucesso!"
+          M3U_COUNT=0
 
-    - name: Notificar falha
-      if: failure()
-      run: |
-        echo "Workflow falhou!"
+          for file in iMPlayer/*.m3u; do
+            if [ -f "$file" ]; then
+
+              M3U_COUNT=$((M3U_COUNT + 1))
+
+              if [ ! -s "$file" ]; then
+                echo "ERRO: arquivo M3U vazio: $file"
+                exit 1
+              fi
+
+              echo "OK M3U: $file"
+            fi
+          done
+
+          if [ "$M3U_COUNT" -eq 0 ]; then
+            echo "ERRO: nenhum arquivo M3U foi encontrado."
+            exit 1
+          fi
+
+          echo
+          echo "=========================================="
+          echo "VALIDANDO ARQUIVOS XML.GZ"
+          echo "=========================================="
+
+          GZ_COUNT=0
+
+          for file in iMPlayer/*.xml.gz; do
+            if [ -f "$file" ]; then
+
+              GZ_COUNT=$((GZ_COUNT + 1))
+
+              if [ ! -s "$file" ]; then
+                echo "ERRO: arquivo XML.GZ vazio: $file"
+                exit 1
+              fi
+
+              if gzip -t "$file"; then
+                echo "OK GZIP: $file"
+              else
+                echo "ERRO: arquivo GZIP inválido: $file"
+                exit 1
+              fi
+            fi
+          done
+
+          if [ "$GZ_COUNT" -eq 0 ]; then
+            echo "ERRO: nenhum arquivo XML.GZ foi encontrado."
+            exit 1
+          fi
+
+          echo
+          echo "=========================================="
+          echo "VALIDAÇÃO CONCLUÍDA COM SUCESSO"
+          echo "=========================================="
+
+      # ============================================================
+      # CONFIGURAR GIT
+      # ============================================================
+      - name: ⚙️ Configurar Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # ============================================================
+      # ATUALIZAR REFERÊNCIA DA MAIN
+      # ============================================================
+      - name: 🔄 Atualizar branch main
+        run: |
+          set -e
+
+          git fetch origin main
+
+          git reset --mixed origin/main
+
+      # ============================================================
+      # VERIFICAR ALTERAÇÕES
+      # ============================================================
+      - name: 🔎 Verificar alterações
+        id: changes
+        shell: bash
+        run: |
+          if [[ -n "$(git status --porcelain -- iMPlayer/)" ]]; then
+
+            echo "changes=true" >> "$GITHUB_OUTPUT"
+
+            echo
+            echo "=========================================="
+            echo "ALTERAÇÕES ENCONTRADAS"
+            echo "=========================================="
+
+            git status --short -- iMPlayer/
+
+          else
+
+            echo "changes=false" >> "$GITHUB_OUTPUT"
+
+            echo
+            echo "=========================================="
+            echo "NENHUMA ALTERAÇÃO ENCONTRADA"
+            echo "=========================================="
+
+          fi
+
+      # ============================================================
+      # COMMIT
+      # ============================================================
+      - name: 💾 Commit arquivos atualizados
+        if: steps.changes.outputs.changes == 'true'
+        run: |
+          set -e
+
+          git add iMPlayer/
+
+          git commit \
+            -m "Atualização automática dos arquivos do iMPlayer"
+
+      # ============================================================
+      # PUSH
+      #
+      # NÃO UTILIZA:
+      #
+      # MY_DOWNLOAD_GITHUB_TOKEN
+      #
+      # Usa o GITHUB_TOKEN automático do GitHub Actions.
+      # ============================================================
+      - name: 🚀 Push para main
+        if: steps.changes.outputs.changes == 'true'
+        run: |
+          set -e
+
+          git push origin HEAD:main
+
+      # ============================================================
+      # SUCESSO
+      # ============================================================
+      - name: ✅ Notificar sucesso
+        if: success()
+        run: |
+          echo
+          echo "=========================================="
+          echo "iMPlayer executado com sucesso!"
+          echo "=========================================="
+
+      # ============================================================
+      # FALHA
+      # ============================================================
+      - name: ❌ Notificar falha
+        if: failure()
+        run: |
+          echo
+          echo "=========================================="
+          echo "ERRO durante a execução do iMPlayer."
+          echo "=========================================="
