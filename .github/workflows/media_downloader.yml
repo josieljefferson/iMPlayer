@@ -1,3 +1,6 @@
+
+    
+    
 # =============================================================
 # 📥 MEDIA DOWNLOADER
 # =============================================================
@@ -147,6 +150,14 @@ jobs:
           echo "Timezone:"
           date '+%d/%m/%Y %H:%M:%S %Z %z'
 
+
+      - name: 🔎 Validar sintaxe Python
+        run: |
+          set -e
+
+          python -m py_compile media_downloader.py
+
+          echo "✅ Sintaxe do media_downloader.py validada com sucesso."
 
       # =========================================================
       # EXECUTAR DOWNLOADER
