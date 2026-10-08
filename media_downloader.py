@@ -3,65 +3,86 @@
 
 """
 =============================================================
-        MEDIA DOWNLOADER - PLAYLISTS M3U E EPG XMLTV
+              📥 MEDIA DOWNLOADER
 =============================================================
 
 Baixa automaticamente:
 
-PLAYLISTS:
-    playlists/playlist.m3u
-    playlists/playlists.m3u
+    • Playlists M3U
+    • EPG XML.GZ
 
-EPG:
-    epg/playlist.xml.gz
-    epg/playlists.xml.gz
+Fontes:
 
-iMPLAYER:
-    iMPlayer/playlist.m3u
-    iMPlayer/playlists.m3u
-    iMPlayer/playlist.xml.gz
-    iMPlayer/playlists.xml.gz
+    EPG:
+    https://raw.githubusercontent.com/josieljefferson/EPG/refs/heads/main/output/playlist.m3u
+    https://raw.githubusercontent.com/josieljefferson/EPG/refs/heads/main/output/epg.xml.gz
 
-RAIZ:
-    playlist.m3u
-    playlists.m3u
+    EPG-M3U:
+    https://raw.githubusercontent.com/josieljefferson/EPG-M3U/refs/heads/main/output/playlist.m3u
+    https://raw.githubusercontent.com/josieljefferson/EPG-M3U/refs/heads/main/output/epg.xml.gz
+
+Destinos:
+
+    playlists/
+    epg/
+    iMPlayer/
+    raiz do repositório
 
 Características:
 
-    - Downloads paralelos
-    - Retry automático
-    - Backoff exponencial
-    - Arquivo temporário durante download
-    - Substituição atômica
-    - Validação de tamanho
-    - Validação de GZIP
-    - MD5
-    - Logs detalhados
-    - Falha do processo se nenhum arquivo for baixado
-    - Não adiciona timestamp dentro dos arquivos
-    - Não corrompe arquivos XML.GZ
+    • Download com streaming
+    • Retry automático
+    • Timeout
+    • Validação M3U
+    • Validação GZIP
+    • Arquivo temporário
+    • Substituição atômica
+    • MD5
+    • Download paralelo
+    • Preserva arquivos válidos em caso de falha
+    • Não altera arquivos XML.GZ com texto
+    • Não utiliza MY_DOWNLOAD_GITHUB_TOKEN
 =============================================================
 """
 
 import gzip
+import hashlib
 import logging
 import os
 import time
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from hashlib import md5
 
 import requests
 
 
-# =============================================================
+# ============================================================
 # CONFIGURAÇÕES
-# =============================================================
+# ============================================================
+
+BASE_DIR = os.getcwd()
+
+OUTPUT_DIRS = {
+    "playlists": os.path.join(BASE_DIR, "playlists"),
+    "epg": os.path.join(BASE_DIR, "epg"),
+    "implayer": os.path.join(BASE_DIR, "iMPlayer"),
+    "root": BASE_DIR,
+}
+
+TIMEOUT = 30
+RETRIES = 3
+MAX_WORKERS = 5
+
+MIN_FILE_SIZE = 1024
+MAX_FILE_SIZE_MB = 100
+MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024
+
+CHUNK_SIZE = 64 * 1024
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/140.0 Safari/537.36"
     ),
     "Accept": "*/*",
@@ -69,289 +90,209 @@ HEADERS = {
 }
 
 
-OUTPUT_DIRS = {
-    "playlists": os.path.join(
-        os.getcwd(),
-        "playlists",
-    ),
-
-    "epg": os.path.join(
-        os.getcwd(),
-        "epg",
-    ),
-
-    "implayer": os.path.join(
-        os.getcwd(),
-        "iMPlayer",
-    ),
-
-    "root": os.getcwd(),
-}
-
-
-TIMEOUT = 30
-
-RETRIES = 3
-
-MAX_WORKERS = 5
-
-MIN_FILE_SIZE = 1024
-
-MAX_FILE_SIZE_MB = 100
-
-CHUNK_SIZE = 64 * 1024
-
-
-# =============================================================
+# ============================================================
 # LOGGING
-# =============================================================
+# ============================================================
+
+LOG_FILE = os.path.join(BASE_DIR, "media_downloader.log")
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(
-            "media_downloader.log",
+            LOG_FILE,
             encoding="utf-8",
         ),
         logging.StreamHandler(),
     ],
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("media_downloader")
 
 
-# =============================================================
+# ============================================================
 # VALIDAÇÃO DE URL
-# =============================================================
+# ============================================================
 
 def validate_url(url):
-    """
-    Verifica se a URL utiliza HTTP ou HTTPS.
-    """
+    """Valida minimamente uma URL HTTP/HTTPS."""
 
     if not isinstance(url, str):
-
-        logger.error(
-            "URL inválida: tipo %s",
-            type(url).__name__,
-        )
-
         return False
 
     url = url.strip()
 
-    if not url:
-
-        logger.error(
-            "URL vazia."
-        )
-
-        return False
-
-    if not url.startswith(
-        (
-            "http://",
-            "https://",
-        )
-    ):
-
-        logger.error(
-            "URL sem HTTP/HTTPS: %s",
-            url,
-        )
-
-        return False
-
-    return True
+    return (
+        url.startswith("https://")
+        or url.startswith("http://")
+    )
 
 
-# =============================================================
-# CRIAR DIRETÓRIO
-# =============================================================
+# ============================================================
+# CRIAÇÃO DE DIRETÓRIOS
+# ============================================================
 
 def create_directory(directory):
-    """
-    Cria o diretório caso ele não exista.
-
-    Não apaga arquivos existentes.
-    """
+    """Cria o diretório caso ele não exista."""
 
     try:
-
         os.makedirs(
             directory,
             exist_ok=True,
         )
 
         logger.info(
-            "Diretório pronto: %s",
+            "Diretório verificado: %s",
             directory,
         )
 
         return True
 
-    except Exception as error:
-
+    except OSError as exc:
         logger.error(
-            "Falha ao criar diretório %s: %s",
+            "Erro ao criar diretório %s: %s",
             directory,
-            error,
+            exc,
         )
 
         return False
 
 
-# =============================================================
-# LIMPAR TEMPORÁRIOS
-# =============================================================
+# ============================================================
+# LIMPEZA DE ARQUIVOS TEMPORÁRIOS
+# ============================================================
 
 def clean_temp_files():
-    """
-    Remove somente arquivos .tmp deixados por downloads
-    interrompidos anteriormente.
-    """
+    """Remove arquivos .tmp antigos."""
 
-    for directory in (
-        OUTPUT_DIRS["playlists"],
-        OUTPUT_DIRS["epg"],
-        OUTPUT_DIRS["implayer"],
-    ):
+    removed = 0
 
-        if not os.path.isdir(directory):
-            continue
-
-        for filename in os.listdir(directory):
+    for root, _, files in os.walk(BASE_DIR):
+        for filename in files:
 
             if not filename.endswith(".tmp"):
                 continue
 
             path = os.path.join(
-                directory,
+                root,
                 filename,
             )
 
             try:
-
                 os.remove(path)
+                removed += 1
 
                 logger.info(
-                    "Temporário removido: %s",
+                    "Arquivo temporário removido: %s",
                     path,
                 )
 
-            except OSError as error:
-
+            except OSError as exc:
                 logger.warning(
                     "Não foi possível remover %s: %s",
                     path,
-                    error,
+                    exc,
                 )
 
+    if removed:
+        logger.info(
+            "Total de arquivos temporários removidos: %d",
+            removed,
+        )
 
-# =============================================================
+
+# ============================================================
 # HASH MD5
-# =============================================================
+# ============================================================
 
 def calculate_file_hash(file_path):
-    """
-    Calcula MD5 do arquivo.
-    """
+    """Calcula MD5 do arquivo."""
+
+    md5 = hashlib.md5()
 
     try:
-
-        hash_md5 = md5()
-
         with open(
             file_path,
             "rb",
         ) as file:
 
-            for chunk in iter(
-                lambda: file.read(8192),
-                b"",
-            ):
+            while True:
+                chunk = file.read(CHUNK_SIZE)
 
-                hash_md5.update(chunk)
+                if not chunk:
+                    break
 
-        return hash_md5.hexdigest()
+                md5.update(chunk)
 
-    except Exception as error:
+        return md5.hexdigest()
 
+    except OSError as exc:
         logger.error(
-            "Erro ao calcular MD5 de %s: %s",
+            "Erro calculando MD5 de %s: %s",
             file_path,
-            error,
+            exc,
         )
 
         return None
 
 
-# =============================================================
-# TAMANHO DO ARQUIVO
-# =============================================================
+# ============================================================
+# VALIDAÇÃO DO TAMANHO
+# ============================================================
 
 def verify_file_size(file_path):
-    """
-    Verifica tamanho mínimo e máximo.
-    """
+    """Verifica tamanho mínimo e máximo."""
 
     try:
+        size = os.path.getsize(file_path)
 
-        size = os.path.getsize(
-            file_path
-        )
-
-        max_size = (
-            MAX_FILE_SIZE_MB
-            * 1024
-            * 1024
-        )
-
-        if size < MIN_FILE_SIZE:
-
-            logger.error(
-                "Arquivo muito pequeno: %s (%d bytes)",
-                file_path,
-                size,
-            )
-
-            return False
-
-        if size > max_size:
-
-            logger.error(
-                "Arquivo muito grande: %s (%.2f MB)",
-                file_path,
-                size / 1024 / 1024,
-            )
-
-            return False
-
-        return True
-
-    except Exception as error:
-
+    except OSError as exc:
         logger.error(
-            "Erro verificando tamanho de %s: %s",
+            "Não foi possível obter tamanho de %s: %s",
             file_path,
-            error,
+            exc,
         )
 
         return False
 
+    if size < MIN_FILE_SIZE:
 
-# =============================================================
-# VALIDAR M3U
-# =============================================================
+        logger.error(
+            "Arquivo muito pequeno: %s (%d bytes)",
+            file_path,
+            size,
+        )
+
+        return False
+
+    if size > MAX_FILE_SIZE:
+
+        logger.error(
+            "Arquivo excede limite de %d MB: %s",
+            MAX_FILE_SIZE_MB,
+            file_path,
+        )
+
+        return False
+
+    logger.info(
+        "Tamanho validado: %s (%d bytes)",
+        file_path,
+        size,
+    )
+
+    return True
+
+
+# ============================================================
+# VALIDAÇÃO M3U
+# ============================================================
 
 def validate_m3u(file_path):
-    """
-    Verifica se o arquivo M3U possui conteúdo válido.
-    """
+    """Valida se o arquivo é uma playlist M3U."""
 
     try:
-
         with open(
             file_path,
             "r",
@@ -361,78 +302,99 @@ def validate_m3u(file_path):
 
             first_line = file.readline().strip()
 
-        if not first_line.startswith(
-            "#EXTM3U"
-        ):
+            if not first_line:
+                logger.error(
+                    "M3U vazio: %s",
+                    file_path,
+                )
 
-            logger.error(
-                "M3U inválido: %s",
+                return False
+
+            if not first_line.startswith("#EXTM3U"):
+
+                logger.error(
+                    "Cabeçalho M3U inválido em %s: %r",
+                    file_path,
+                    first_line,
+                )
+
+                return False
+
+            logger.info(
+                "M3U validado: %s",
                 file_path,
             )
 
-            return False
+            return True
 
-        return True
-
-    except Exception as error:
+    except (
+        OSError,
+        UnicodeError,
+    ) as exc:
 
         logger.error(
             "Erro validando M3U %s: %s",
             file_path,
-            error,
+            exc,
         )
 
         return False
 
 
-# =============================================================
-# VALIDAR GZIP
-# =============================================================
+# ============================================================
+# VALIDAÇÃO GZIP
+# ============================================================
 
 def validate_gzip(file_path):
     """
-    Verifica se o arquivo .gz é realmente um GZIP válido.
+    Valida um arquivo GZIP.
+
+    Importante:
+    NÃO adiciona texto ao arquivo depois do download.
     """
 
     try:
-
         with gzip.open(
             file_path,
             "rb",
-        ) as file:
+        ) as gz:
 
-            while file.read(
-                1024 * 1024
-            ):
+            while True:
+                chunk = gz.read(CHUNK_SIZE)
 
-                pass
+                if not chunk:
+                    break
+
+        logger.info(
+            "GZIP validado: %s",
+            file_path,
+        )
 
         return True
 
-    except Exception as error:
+    except (
+        OSError,
+        EOFError,
+        gzip.BadGzipFile,
+    ) as exc:
 
         logger.error(
-            "GZIP inválido: %s: %s",
+            "GZIP inválido: %s - %s",
             file_path,
-            error,
+            exc,
         )
 
         return False
 
 
-# =============================================================
-# VALIDAR ARQUIVO PELO TIPO
-# =============================================================
+# ============================================================
+# VALIDAÇÃO GERAL
+# ============================================================
 
 def validate_downloaded_file(file_path):
-    """
-    Executa validações específicas.
-    """
+    """Valida arquivo baixado."""
 
-    if not os.path.exists(
-        file_path
-    ):
-
+    if not os.path.isfile(file_path):
         logger.error(
             "Arquivo não existe: %s",
             file_path,
@@ -440,69 +402,57 @@ def validate_downloaded_file(file_path):
 
         return False
 
-    if not verify_file_size(
-        file_path
-    ):
-
+    if not verify_file_size(file_path):
         return False
 
     lower_path = file_path.lower()
 
-    if lower_path.endswith(
-        ".m3u"
-    ):
+    if lower_path.endswith(".m3u"):
 
-        return validate_m3u(
-            file_path
-        )
+        return validate_m3u(file_path)
 
-    if lower_path.endswith(
-        ".xml.gz"
-    ):
+    if lower_path.endswith(".xml.gz"):
 
-        return validate_gzip(
-            file_path
-        )
+        return validate_gzip(file_path)
 
     return True
 
 
-# =============================================================
+# ============================================================
 # DOWNLOAD
-# =============================================================
+# ============================================================
 
 def download_file(
     url,
-    save_path,
-    retries=RETRIES,
+    destination,
 ):
     """
-    Faz o download usando arquivo temporário.
+    Faz download de um arquivo.
 
-    O arquivo final só é substituído depois que o download
-    e todas as validações forem concluídos.
+    O arquivo é baixado para .tmp e somente depois
+    substitui o arquivo definitivo.
     """
 
     if not validate_url(url):
+
+        logger.error(
+            "URL inválida: %s",
+            url,
+        )
+
         return False
 
-    directory = os.path.dirname(
-        save_path
-    )
+    destination_dir = os.path.dirname(destination)
 
-    os.makedirs(
-        directory,
-        exist_ok=True,
-    )
+    if not create_directory(destination_dir):
 
-    temp_path = (
-        save_path
-        + ".tmp"
-    )
+        return False
+
+    temp_file = destination + ".tmp"
 
     for attempt in range(
         1,
-        retries + 1,
+        RETRIES + 1,
     ):
 
         try:
@@ -510,9 +460,17 @@ def download_file(
             logger.info(
                 "Download %d/%d: %s",
                 attempt,
-                retries,
+                RETRIES,
                 url,
             )
+
+            if os.path.exists(temp_file):
+
+                try:
+                    os.remove(temp_file)
+
+                except OSError:
+                    pass
 
             with requests.get(
                 url,
@@ -524,8 +482,34 @@ def download_file(
 
                 response.raise_for_status()
 
+                content_length = response.headers.get(
+                    "Content-Length"
+                )
+
+                if content_length:
+
+                    try:
+                        expected_size = int(
+                            content_length
+                        )
+
+                        if expected_size > MAX_FILE_SIZE:
+
+                            raise ValueError(
+                                "Arquivo remoto excede "
+                                f"{MAX_FILE_SIZE_MB} MB"
+                            )
+
+                    except ValueError as exc:
+
+                        if "excede" in str(exc):
+
+                            raise
+
+                total = 0
+
                 with open(
-                    temp_path,
+                    temp_file,
                     "wb",
                 ) as file:
 
@@ -533,251 +517,270 @@ def download_file(
                         chunk_size=CHUNK_SIZE
                     ):
 
-                        if chunk:
-                            file.write(chunk)
+                        if not chunk:
+                            continue
 
-            # -------------------------------------------------
-            # VALIDAR TEMPORÁRIO
-            # -------------------------------------------------
+                        total += len(chunk)
+
+                        if total > MAX_FILE_SIZE:
+
+                            raise ValueError(
+                                "Download excedeu o tamanho "
+                                f"máximo de {MAX_FILE_SIZE_MB} MB"
+                            )
+
+                        file.write(chunk)
+
+            logger.info(
+                "Download concluído: %s (%d bytes)",
+                url,
+                total,
+            )
 
             if not validate_downloaded_file(
-                temp_path
+                temp_file
             ):
 
                 logger.error(
-                    "Arquivo baixado inválido: %s",
-                    temp_path,
+                    "Arquivo baixado é inválido: %s",
+                    url,
                 )
 
                 try:
-                    os.remove(temp_path)
+                    os.remove(temp_file)
+
                 except OSError:
                     pass
 
-                continue
-
-            # -------------------------------------------------
-            # SUBSTITUIÇÃO ATÔMICA
-            # -------------------------------------------------
-
-            os.replace(
-                temp_path,
-                save_path,
-            )
-
-            # -------------------------------------------------
-            # INFORMAÇÕES
-            # -------------------------------------------------
-
-            file_size = os.path.getsize(
-                save_path
-            )
+                raise ValueError(
+                    "Arquivo baixado inválido"
+                )
 
             file_hash = calculate_file_hash(
-                save_path
+                temp_file
+            )
+
+            if file_hash:
+
+                logger.info(
+                    "MD5 %s: %s",
+                    os.path.basename(destination),
+                    file_hash,
+                )
+
+            # Substituição atômica.
+            os.replace(
+                temp_file,
+                destination,
             )
 
             logger.info(
-                "DOWNLOAD OK: %s",
-                save_path,
-            )
-
-            logger.info(
-                "Tamanho: %d bytes",
-                file_size,
-            )
-
-            logger.info(
-                "MD5: %s",
-                file_hash,
+                "Arquivo atualizado: %s",
+                destination,
             )
 
             return True
 
-        except requests.exceptions.Timeout:
+        except requests.RequestException as exc:
 
-            logger.error(
-                "Timeout: %s",
-                url,
+            logger.warning(
+                "Erro HTTP no download %d/%d: %s",
+                attempt,
+                RETRIES,
+                exc,
             )
 
-        except requests.exceptions.ConnectionError as error:
+        except (
+            OSError,
+            ValueError,
+        ) as exc:
 
-            logger.error(
-                "Erro de conexão: %s",
-                error,
+            logger.warning(
+                "Erro no download %d/%d: %s",
+                attempt,
+                RETRIES,
+                exc,
             )
 
-        except requests.exceptions.HTTPError as error:
+        except Exception as exc:
 
-            logger.error(
-                "Erro HTTP: %s",
-                error,
+            logger.exception(
+                "Erro inesperado no download: %s",
+                exc,
             )
 
-        except requests.exceptions.RequestException as error:
+        if attempt < RETRIES:
 
-            logger.error(
-                "Erro de requisição: %s",
-                error,
-            )
-
-        except Exception as error:
-
-            logger.error(
-                "Erro inesperado: %s: %s",
-                type(error).__name__,
-                error,
-            )
-
-        # -----------------------------------------------------
-        # REMOVER TEMPORÁRIO
-        # -----------------------------------------------------
-
-        if os.path.exists(
-            temp_path
-        ):
-
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
-
-        # -----------------------------------------------------
-        # BACKOFF
-        # -----------------------------------------------------
-
-        if attempt < retries:
-
-            wait_time = 2 ** attempt
+            wait_time = 2 ** (attempt - 1)
 
             logger.info(
-                "Aguardando %d segundos antes da próxima tentativa...",
+                "Aguardando %d segundos para nova tentativa...",
                 wait_time,
             )
 
-            time.sleep(
-                wait_time
-            )
+            time.sleep(wait_time)
+
+    try:
+
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+
+    except OSError:
+        pass
 
     logger.error(
-        "FALHA DEFINITIVA: %s",
+        "Falha definitiva no download: %s",
         url,
     )
 
     return False
 
 
-# =============================================================
+# ============================================================
 # LISTA DE DOWNLOADS
-# =============================================================
+# ============================================================
 
 def get_download_lists():
-    """
-    Retorna todas as URLs utilizadas pelo sistema.
-    """
+    """Retorna as fontes de playlists e EPG."""
 
-    playlists = {
-        "playlist.m3u":
-            "https://raw.githubusercontent.com/"
-            "josieljefferson/EPG/refs/heads/main/"
-            "output/playlist.m3u",
+    return {
+        "EPG": {
+            "playlist": (
+                "https://raw.githubusercontent.com/"
+                "josieljefferson/EPG/refs/heads/main/"
+                "output/playlist.m3u"
+            ),
+            "epg": (
+                "https://raw.githubusercontent.com/"
+                "josieljefferson/EPG/refs/heads/main/"
+                "output/epg.xml.gz"
+            ),
+        },
 
-        "playlists.m3u":
-            "https://raw.githubusercontent.com/"
-            "josieljefferson/EPG-M3U/refs/heads/main/"
-            "output/playlist.m3u",
+        "EPG-M3U": {
+            "playlist": (
+                "https://raw.githubusercontent.com/"
+                "josieljefferson/EPG-M3U/refs/heads/main/"
+                "output/playlist.m3u"
+            ),
+            "epg": (
+                "https://raw.githubusercontent.com/"
+                "josieljefferson/EPG-M3U/refs/heads/main/"
+                "output/epg.xml.gz"
+            ),
+        },
     }
 
-    epg_files = {
-        "playlist.xml.gz":
-            "https://raw.githubusercontent.com/"
-            "josieljefferson/EPG/refs/heads/main/"
-            "output/epg.xml.gz",
 
-        "playlists.xml.gz":
-            "https://raw.githubusercontent.com/"
-            "josieljefferson/EPG-M3U/refs/heads/main/"
-            "output/epg.xml.gz",
-    }
-
-    return playlists, epg_files
-
-
-# =============================================================
-# CONSTRUIR TAREFAS
-# =============================================================
+# ============================================================
+# CONSTRUÇÃO DAS TAREFAS
+# ============================================================
 
 def build_download_tasks():
     """
-    Monta todas as tarefas.
+    Cria todas as tarefas de download.
 
-    As mesmas fontes são utilizadas nas respectivas pastas.
+    Cada playlist é salva em:
+
+        playlists/
+        iMPlayer/
+        raiz/
+
+    Cada EPG é salvo em:
+
+        epg/
+        iMPlayer/
     """
 
-    playlists, epg_files = (
-        get_download_lists()
-    )
+    sources = get_download_lists()
 
     tasks = []
 
-    # ---------------------------------------------------------
-    # PLAYLISTS
-    # ---------------------------------------------------------
+    for source_name, files in sources.items():
 
-    for filename, url in playlists.items():
+        playlist_url = files["playlist"]
+        epg_url = files["epg"]
+
+        # ----------------------------------------------------
+        # NOMES DOS ARQUIVOS
+        # ----------------------------------------------------
+
+        if source_name == "EPG":
+
+            playlist_name = "playlist.m3u"
+            epg_name = "playlist.xml.gz"
+
+        else:
+
+            playlist_name = "playlists.m3u"
+            epg_name = "playlists.xml.gz"
+
+        # ----------------------------------------------------
+        # PLAYLIST -> playlists/
+        # ----------------------------------------------------
 
         tasks.append(
             (
-                url,
+                playlist_url,
                 os.path.join(
                     OUTPUT_DIRS["playlists"],
-                    filename,
+                    playlist_name,
                 ),
             )
         )
 
-        tasks.append(
-            (
-                url,
-                os.path.join(
-                    OUTPUT_DIRS["implayer"],
-                    filename,
-                ),
-            )
+        # ----------------------------------------------------
+        # PLAYLIST -> iMPlayer/
+        # ----------------------------------------------------
 
         tasks.append(
             (
-                url,
+                playlist_url,
+                os.path.join(
+                    OUTPUT_DIRS["implayer"],
+                    playlist_name,
+                ),
+            )
+        )
+
+        # ----------------------------------------------------
+        # PLAYLIST -> RAIZ
+        # ----------------------------------------------------
+
+        tasks.append(
+            (
+                playlist_url,
                 os.path.join(
                     OUTPUT_DIRS["root"],
-                    filename,
+                    playlist_name,
                 ),
             )
         )
 
-    # ---------------------------------------------------------
-    # EPG
-    # ---------------------------------------------------------
-
-    for filename, url in epg_files.items():
+        # ----------------------------------------------------
+        # EPG -> epg/
+        # ----------------------------------------------------
 
         tasks.append(
             (
-                url,
+                epg_url,
                 os.path.join(
                     OUTPUT_DIRS["epg"],
-                    filename,
+                    epg_name,
                 ),
             )
         )
 
+        # ----------------------------------------------------
+        # EPG -> iMPlayer/
+        # ----------------------------------------------------
+
         tasks.append(
             (
-                url,
+                epg_url,
                 os.path.join(
                     OUTPUT_DIRS["implayer"],
-                    filename,
+                    epg_name,
                 ),
             )
         )
@@ -785,265 +788,199 @@ def build_download_tasks():
     return tasks
 
 
-# =============================================================
-# PREPARAR DIRETÓRIOS
-# =============================================================
+# ============================================================
+# PREPARAÇÃO DOS DIRETÓRIOS
+# ============================================================
 
 def prepare_directories():
-    """
-    Cria as pastas necessárias sem apagar os arquivos atuais.
-    """
+    """Prepara os diretórios necessários."""
 
-    for name in (
-        "playlists",
-        "epg",
-        "implayer",
-    ):
+    success = True
 
-        directory = OUTPUT_DIRS[
-            name
-        ]
+    for directory in OUTPUT_DIRS.values():
 
-        if not create_directory(
-            directory
-        ):
+        if not create_directory(directory):
+            success = False
 
-            raise RuntimeError(
-                "Não foi possível preparar "
-                f"o diretório: {directory}"
-            )
+    return success
 
 
-# =============================================================
-# PRINCIPAL
-# =============================================================
+# ============================================================
+# DOWNLOAD DE UMA TAREFA
+# ============================================================
+
+def process_task(task):
+    """Processa uma única tarefa."""
+
+    url, destination = task
+
+    result = download_file(
+        url,
+        destination,
+    )
+
+    return (
+        url,
+        destination,
+        result,
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
+    """Função principal."""
 
+    logger.info("=" * 70)
     logger.info(
-        "=" * 70
+        "📥 INICIANDO MEDIA DOWNLOADER"
     )
-
-    logger.info(
-        "INICIANDO MEDIA DOWNLOADER"
-    )
-
-    logger.info(
-        "=" * 70
-    )
+    logger.info("=" * 70)
 
     start_time = time.time()
 
-    # ---------------------------------------------------------
-    # PREPARAÇÃO
-    # ---------------------------------------------------------
-
-    prepare_directories()
-
     clean_temp_files()
 
-    # ---------------------------------------------------------
-    # TAREFAS
-    # ---------------------------------------------------------
+    if not prepare_directories():
+
+        logger.error(
+            "Não foi possível preparar os diretórios."
+        )
+
+        return 1
 
     tasks = build_download_tasks()
 
     logger.info(
-        "Total de downloads: %d",
+        "Total de tarefas de download: %d",
         len(tasks),
     )
 
-    logger.info(
-        "Threads: %d",
-        MAX_WORKERS,
-    )
+    successful = 0
+    failed = 0
 
-    # ---------------------------------------------------------
-    # EXECUTAR
-    # ---------------------------------------------------------
-
-    success = 0
-    failures = 0
+    # --------------------------------------------------------
+    # EXECUÇÃO PARALELA
+    # --------------------------------------------------------
 
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     ) as executor:
 
-        futures = {
+        future_map = {
             executor.submit(
-                download_file,
-                url,
-                path,
-            ): (
-                url,
-                path,
-            )
-
-            for url, path in tasks
+                process_task,
+                task,
+            ): task
+            for task in tasks
         }
 
         for future in as_completed(
-            futures
+            future_map
         ):
 
-            url, path = futures[
-                future
-            ]
+            task = future_map[future]
 
             try:
 
-                if future.result():
+                url, destination, result = (
+                    future.result()
+                )
 
-                    success += 1
+                if result:
+
+                    successful += 1
+
+                    logger.info(
+                        "✅ OK: %s",
+                        destination,
+                    )
 
                 else:
 
-                    failures += 1
+                    failed += 1
 
-            except Exception as error:
+                    logger.error(
+                        "❌ FALHA: %s",
+                        destination,
+                    )
 
-                failures += 1
+            except Exception as exc:
 
-                logger.error(
-                    "Erro na tarefa %s: %s",
-                    path,
-                    error,
+                failed += 1
+
+                logger.exception(
+                    "Erro processando tarefa %s: %s",
+                    task,
+                    exc,
                 )
 
-    # ---------------------------------------------------------
-    # RELATÓRIO
-    # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # LIMPEZA
+    # --------------------------------------------------------
 
-    elapsed = (
-        time.time()
-        - start_time
-    )
+    clean_temp_files()
 
+    elapsed = time.time() - start_time
+
+    logger.info("=" * 70)
     logger.info(
-        "=" * 70
+        "📊 RESULTADO FINAL"
     )
-
     logger.info(
-        "PROCESSO CONCLUÍDO"
+        "Sucessos: %d",
+        successful,
     )
-
+    logger.info(
+        "Falhas: %d",
+        failed,
+    )
+    logger.info(
+        "Total: %d",
+        len(tasks),
+    )
     logger.info(
         "Tempo: %.2f segundos",
         elapsed,
     )
+    logger.info("=" * 70)
 
-    logger.info(
-        "Sucessos: %d",
-        success,
-    )
+    # --------------------------------------------------------
+    # RESULTADO
+    # --------------------------------------------------------
 
-    logger.info(
-        "Falhas: %d",
-        failures,
-    )
+    if successful == 0:
 
-    logger.info(
-        "=" * 70
-    )
-
-    # ---------------------------------------------------------
-    # LISTAGEM FINAL
-    # ---------------------------------------------------------
-
-    for name in (
-        "playlists",
-        "epg",
-        "implayer",
-    ):
-
-        directory = OUTPUT_DIRS[
-            name
-        ]
-
-        logger.info(
-            "Conteúdo de %s:",
-            directory,
+        logger.error(
+            "Nenhum arquivo foi baixado com sucesso."
         )
 
-        if not os.path.isdir(
-            directory
-        ):
-            continue
+        return 1
 
-        for filename in sorted(
-            os.listdir(directory)
-        ):
-
-            path = os.path.join(
-                directory,
-                filename,
-            )
-
-            if os.path.isfile(
-                path
-            ):
-
-                logger.info(
-                    "  %s - %d bytes",
-                    filename,
-                    os.path.getsize(path),
-                )
-
-    # ---------------------------------------------------------
-    # FALHAR SE NÃO HOUVE DOWNLOAD
-    # ---------------------------------------------------------
-
-    if success == 0:
-
-        logger.critical(
-            "NENHUM ARQUIVO FOI BAIXADO."
-        )
-
-        raise SystemExit(1)
-
-    # ---------------------------------------------------------
-    # DOWNLOAD PARCIAL
-    # ---------------------------------------------------------
-
-    if failures > 0:
+    if failed > 0:
 
         logger.warning(
-            "Alguns downloads falharam."
+            "Existem %d tarefa(s) com falha.",
+            failed,
         )
 
-        # Não derruba o workflow se pelo menos um arquivo
-        # foi baixado corretamente.
-        return
+    else:
 
-    logger.info(
-        "TODOS OS DOWNLOADS FORAM CONCLUÍDOS."
-    )
+        logger.info(
+            "🎉 Todos os downloads foram concluídos."
+        )
+
+    return 0
 
 
-# =============================================================
+# ============================================================
 # EXECUÇÃO
-# =============================================================
+# ============================================================
 
 if __name__ == "__main__":
 
-    try:
-
+    raise SystemExit(
         main()
-
-    except KeyboardInterrupt:
-
-        logger.warning(
-            "Processo interrompido pelo usuário."
-        )
-
-        raise SystemExit(130)
-
-    except Exception as error:
-
-        logger.critical(
-            "Erro não tratado: %s",
-            error,
-            exc_info=True,
-        )
-
-        raise SystemExit(1)
+    )
