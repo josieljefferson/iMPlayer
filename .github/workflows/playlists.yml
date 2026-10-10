@@ -1,92 +1,165 @@
-name: playlists
+name: 📺 Atualizar Playlists e EPG
 
 on:
   schedule:
-    - cron: '5 4,10,16,22 * * *'  # 00:01 e 12:01 BRT
+    # 00h05, 06h05, 12h05 e 18h05 no horário de Brasília.
+    # O GitHub Actions utiliza UTC.
+    - cron: '5 3,9,15,21 * * *'
+
   workflow_dispatch:
 
-# Permite que o GITHUB_TOKEN faça commit e push
+# Permite que o GITHUB_TOKEN publique alterações.
 permissions:
   contents: write
 
+# Impede duas execuções deste workflow simultaneamente.
+concurrency:
+  group: atualizar-playlists-epg
+  cancel-in-progress: false
+
 jobs:
   download:
+    name: Baixar e publicar arquivos
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
-
-      - name: Checkout repositório
+      # --------------------------------------------------
+      # CHECKOUT
+      # --------------------------------------------------
+      - name: Checkout do repositório
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
+      # --------------------------------------------------
+      # CONFIGURAR GIT
+      # --------------------------------------------------
+      - name: Configurar Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git config pull.rebase true
+
+      # --------------------------------------------------
+      # ATUALIZAR ANTES DE MODIFICAR OS ARQUIVOS
+      # --------------------------------------------------
+      - name: Atualizar repositório antes dos downloads
+        run: |
+          set -euo pipefail
+
+          git fetch origin main
+          git pull --rebase origin main
+
+          echo "Repositório atualizado."
+          git status --short
+
+      # --------------------------------------------------
+      # PYTHON
+      # --------------------------------------------------
       - name: Configurar Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.8'
+          python-version: '3.11'
+          cache: pip
 
-      - name: Cache pip dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
+      # --------------------------------------------------
+      # DEPENDÊNCIAS
+      # --------------------------------------------------
       - name: Instalar dependências
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          python -m pip install requests
 
-      - name: Executar script de playlists
+      # --------------------------------------------------
+      # DOWNLOAD
+      # --------------------------------------------------
+      - name: Executar playlists.py
         run: |
+          set -euo pipefail
           python playlists.py
 
-      - name: Confirmar arquivos baixados
+      # --------------------------------------------------
+      # VALIDAR RESULTADOS
+      # --------------------------------------------------
+      - name: Validar arquivos baixados
         run: |
-          echo "Arquivos baixados:"
-          ls -lah playlists
+          set -euo pipefail
 
-          echo
-          echo "Verificando arquivos não vazios:"
+          test -d playlists
 
-          for file in playlists/*; do
-            if [ ! -s "$file" ]; then
-              echo "ERRO: arquivo vazio: $file"
+          required_files=(
+            "EPG-playlist.m3u"
+            "EPG-M3U-playlist.m3u"
+            "EPG-epg.xml.gz"
+            "EPG-M3U-epg.xml.gz"
+          )
+
+          echo "Arquivos publicados localmente:"
+          ls -lah playlists/
+
+          for filename in "${required_files[@]}"; do
+            filepath="playlists/${filename}"
+
+            if [ ! -s "$filepath" ]; then
+              echo "::error::Arquivo ausente ou vazio: $filepath"
               exit 1
+            fi
+
+            echo "OK: $filepath"
+          done
+
+          echo "Todos os quatro arquivos foram validados."
+
+      # --------------------------------------------------
+      # COMMIT E PUBLICAÇÃO
+      # --------------------------------------------------
+      - name: Commit e push com proteção contra conflitos
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Adiciona somente os arquivos de playlists.
+          git add playlists/
+
+          # Se nenhum arquivo mudou, não cria commit vazio.
+          if git diff --cached --quiet; then
+            echo "Nenhuma alteração nos arquivos baixados."
+            exit 0
+          fi
+
+          git commit -m "Atualização automática das playlists e EPG"
+
+          # Busca atualizações remotas e reaplica o commit
+          # local antes de cada tentativa de publicação.
+          for attempt in 1 2 3; do
+            echo "Tentativa de publicação ${attempt}/3"
+
+            git fetch origin main
+            git rebase origin/main
+
+            if git push origin HEAD:main; then
+              echo "Publicação concluída com sucesso."
+              exit 0
+            fi
+
+            echo "O push falhou. Nova tentativa será realizada."
+
+            if [ "$attempt" -lt 3 ]; then
+              sleep 2
             fi
           done
 
-      - name: Verificar mudanças no Git
-        id: git_status
-        run: |
-          if [[ -n "$(git status --porcelain)" ]]; then
-            echo "changes=true" >> "$GITHUB_ENV"
-          else
-            echo "changes=false" >> "$GITHUB_ENV"
-          fi
+          echo "::error::Não foi possível publicar após três tentativas."
+          exit 1
 
-      - name: Configurar Git
-        if: env.changes == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Atualizar repositório antes do commit
-        if: env.changes == 'true'
-        run: |
-          git pull --rebase origin main
-
-      - name: Commit e push dos arquivos baixados
-        if: env.changes == 'true'
-        run: |
-          git add playlists/
-
-          git commit -m "Atualização automática dos arquivos baixados"
-
-          git push origin main
-
+      # --------------------------------------------------
+      # RESULTADO
+      # --------------------------------------------------
       - name: Notificar sucesso
         if: success()
         run: |
@@ -95,4 +168,4 @@ jobs:
       - name: Notificar falha
         if: failure()
         run: |
-          echo "Workflow falhou!"
+          echo "::error::O workflow de playlists falhou."
